@@ -175,9 +175,10 @@ if device == "cpu":
     print("Warning: MPS not available. Using CPU.")
 model = GPT.from_pretrained("gpt2")
 enc = tiktoken.get_encoding("gpt2")
+END_OF_TEXT = enc.encode("<|endoftext|>", allowed_special={"<|endoftext|>"} )[0]
 
 # Load fine-tuned weights
-weights_path = "/Users/ahmed_ali/Downloads/gpt2_finetuned (2).pth"  # Updated to match your path
+weights_path = "/Users/ahmed_ali/Downloads/gpt2_finetuned_qa_final.pth"  # Updated to match your path
 try:
     model.load_state_dict(torch.load(weights_path, map_location=device))
     model.to(device)
@@ -187,26 +188,73 @@ except Exception as e:
     logger.error(f"Error loading weights: {e}")
     raise Exception(f"Failed to load weights from {weights_path}: {e}")
 
-def nucleus_sampling(probs, p=0.3):
+# def nucleus_sampling(probs, p=0.3):
+#     sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+#     cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+#     mask = cumulative_probs <= p
+#     top_p_probs = sorted_probs * mask.float()
+#     prob_sum = top_p_probs.sum(dim=-1, keepdim=True)
+#     # Handle case where prob_sum is zero
+#     if prob_sum.item() == 0:
+#         # Fallback to uniform sampling over all tokens
+#         top_p_probs = torch.ones_like(probs) / probs.size(-1)
+#     else:
+#         top_p_probs = top_p_probs / prob_sum
+#     try:
+#         ix = torch.multinomial(top_p_probs, 1)
+#         return torch.gather(sorted_indices, -1, ix)
+#     except Exception as e:
+#         logger.error(f"Error in nucleus sampling: {e}")
+#         # Fallback to greedy sampling
+#         return torch.argmax(probs, dim=-1, keepdim=True)
+
+# def answer_question(model, enc, question, device, max_length=100):
+#     try:
+#         if "my name" in question.lower():
+#             return "I don't have access to your name. Please provide more context."
+
+#         model.eval()
+#         prompt = f"Question: {question} Answer:"
+#         tokens = torch.tensor(enc.encode(prompt, allowed_special={'<|endoftext|>'}), dtype=torch.long).unsqueeze(0).to(device)
+        
+#         with torch.no_grad():
+#             while tokens.size(1) < max_length:
+#                 logits, _ = model(tokens)
+#                 logits = logits[:, -1, :]
+#                 # Clip logits to prevent overflow
+#                 logits = torch.clamp(logits, -100, 100)
+#                 probs = F.softmax(logits, dim=-1)
+#                 ix = nucleus_sampling(probs, p=0.7)
+#                 xcol = ix
+#                 tokens = torch.cat((tokens, xcol), dim=1)
+#                 if xcol.item() == enc.encode("<|endoftext|>", allowed_special={'<|endoftext|>'})[0]:
+#                     break
+        
+#         generated = enc.decode(tokens[0].tolist())
+#         try:
+#             answer = generated.split("Answer:")[1].strip()
+#             answer = answer.replace("<|endoftext|>", "").strip()
+#         except IndexError:
+#             answer = "Could not generate a valid answer."
+#         return answer
+
+#     except Exception as e:
+#         logger.error(f"Error in answer_question: {e}")
+#         return f"Error generating answer: {str(e)}"
+def nucleus_sampling(probs, p=0.7):
     sorted_probs, sorted_indices = torch.sort(probs, descending=True)
     cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
     mask = cumulative_probs <= p
+    if not torch.any(mask):
+        # Fallback to top-1 sampling (greedy)
+        return torch.argmax(probs, dim=-1, keepdim=True)
     top_p_probs = sorted_probs * mask.float()
     prob_sum = top_p_probs.sum(dim=-1, keepdim=True)
-    # Handle case where prob_sum is zero
-    if prob_sum.item() == 0:
-        # Fallback to uniform sampling over all tokens
-        top_p_probs = torch.ones_like(probs) / probs.size(-1)
-    else:
-        top_p_probs = top_p_probs / prob_sum
-    try:
-        ix = torch.multinomial(top_p_probs, 1)
-        return torch.gather(sorted_indices, -1, ix)
-    except Exception as e:
-        logger.error(f"Error in nucleus sampling: {e}")
-        # Fallback to greedy sampling
-        return torch.argmax(probs, dim=-1, keepdim=True)
+    top_p_probs = top_p_probs / prob_sum
+    ix = torch.multinomial(top_p_probs, 1)
+    return torch.gather(sorted_indices, -1, ix)
 
+# --------- Answer Question Logic ----------
 def answer_question(model, enc, question, device, max_length=100):
     try:
         if "my name" in question.lower():
@@ -215,31 +263,26 @@ def answer_question(model, enc, question, device, max_length=100):
         model.eval()
         prompt = f"Question: {question} Answer:"
         tokens = torch.tensor(enc.encode(prompt, allowed_special={'<|endoftext|>'}), dtype=torch.long).unsqueeze(0).to(device)
-        
+
         with torch.no_grad():
             while tokens.size(1) < max_length:
                 logits, _ = model(tokens)
                 logits = logits[:, -1, :]
-                # Clip logits to prevent overflow
                 logits = torch.clamp(logits, -100, 100)
                 probs = F.softmax(logits, dim=-1)
                 ix = nucleus_sampling(probs, p=0.7)
-                xcol = ix
-                tokens = torch.cat((tokens, xcol), dim=1)
-                if xcol.item() == enc.encode("<|endoftext|>", allowed_special={'<|endoftext|>'})[0]:
+                tokens = torch.cat((tokens, ix), dim=1)
+                if ix.item() == END_OF_TEXT:
                     break
-        
-        generated = enc.decode(tokens[0].tolist())
-        try:
-            answer = generated.split("Answer:")[1].strip()
-            answer = answer.replace("<|endoftext|>", "").strip()
-        except IndexError:
-            answer = "Could not generate a valid answer."
-        return answer
+
+        decoded = enc.decode(tokens[0].tolist())
+        answer = decoded.split("Answer:")[1].split("<|endoftext|>")[0].strip()
+        return answer if answer else "No answer generated."
 
     except Exception as e:
         logger.error(f"Error in answer_question: {e}")
-        return f"Error generating answer: {str(e)}"
+        return "Error generating answer."
+
 
 @app.route("/answer", methods=["POST"])
 def answer_question_route():
@@ -260,7 +303,9 @@ def answer_question_route():
 if __name__ == "__main__":
     # Test questions for direct testing
     test_questions = [
-        "What is My name?"
+        "What is the capital of France?",
+        "Who wrote Pride and Prejudice?",
+        "What is my name?"
     ]
     for question in test_questions:
         answer = answer_question(model, enc, question, device)
