@@ -118,5 +118,4 @@ Contributions are welcome! Please submit a pull request or open an issue on the 
   - LinkedIn: [Ahmed Ali](https://www.linkedin.com/in/ahmed-ali-b4baa9203/)
   - GitHub: [ahmedalii3](https://github.com/ahmedalii3)
 
-## License
-This project is licensed under the MIT License.
+
